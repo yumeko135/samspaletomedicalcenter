@@ -459,7 +459,31 @@ function nameTaken(nom, prenom, exceptId){
 }
 
 /* ---------- Session ---------- */
-let session = lsGet("sams-session");
+function ssGet(k){ try { return sessionStorage.getItem(k); } catch(e){ return null; } }
+function ssSet(k,v){ try { sessionStorage.setItem(k,v); } catch(e){} }
+function ssDel(k){ try { sessionStorage.removeItem(k); } catch(e){} }
+/* « Se souvenir de moi » : session gardée dans le navigateur ; sinon, jusqu'à la fermeture de l'onglet */
+let session = lsGet("sams-session") || ssGet("sams-session");
+function startSession(id, remember){
+  session = id;
+  if (remember) { lsSet("sams-session", id); lsSet("sams-remember-id", id); ssDel("sams-session"); }
+  else { ssSet("sams-session", id); lsDel("sams-session"); lsDel("sams-remember-id"); }
+}
+const DIRECTOR_ID = "gomes.guisepa";
+/* Empreinte du mot de passe actuel de la directrice (le mot de passe lui-même n'est pas stocké) */
+const DIRECTOR_HASH = "b5f16752e40b9803d3ffbd1bf6a7726978e08db6edfa1ff741e581920d342a9b";
+/* Accepte « nom.prenom », « Nom Prénom » ou « Prénom Nom » */
+function resolveLogin(input){
+  const raw = String(input || "").trim();
+  if (!/\s/.test(raw)) return norm(raw);
+  const p = parseName(raw); if (!p) return norm(raw).replace(/\s+/g, "");
+  if (S.accounts[p.username]) return p.username;
+  const k = nameKey(p.nom, p.prenom);
+  const hit = all("accounts").find(a => nameKey(a.nom, a.prenom) === k);
+  if (hit) return hit.id;
+  const t = raw.split(/\s+/); const rev = slug(t[t.length - 1]) + "." + slug(t.slice(0, -1).join(" "));
+  return rev === DIRECTOR_ID ? rev : p.username;
+}
 const me = () => session ? S.accounts[session] && Object.assign({id: session}, S.accounts[session]) : null;
 const acc = id => S.accounts[id] ? Object.assign({id}, S.accounts[id]) : null;
 const fullName = a => a ? (a.prenom + " " + a.nom) : "Compte supprimé";
@@ -756,7 +780,6 @@ FORM.apply = (f, fd) => {
 
 /* ---------- Connexion, inscription, première ouverture ---------- */
 function loginPage(){
-  if (!all("accounts").length) return setupPage();
   const tab = V.tab === "register" ? "register" : "login";
   return `<div class="wrap"><div class="authbox"><div class="card">
     <div class="authhead"><img src="${LOGO}" alt=""><h2>${tab === "login" ? "Connexion" : "Créer un compte patient"}</h2>
@@ -764,8 +787,9 @@ function loginPage(){
     <div class="tabs"><button class="${tab === "login" ? "on" : ""}" data-act="go" data-p="login" data-tab="login">Se connecter</button><button class="${tab === "register" ? "on" : ""}" data-act="go" data-p="login" data-tab="register">Créer un compte</button></div>
     ${tab === "login" ? `
     <form class="stack" data-form="login">
-      <label class="f">Identifiant<input id="lg-user" name="user" autocomplete="username" required placeholder="nom.prenom"></label>
+      <label class="f">Identifiant<input id="lg-user" name="user" autocomplete="username" required placeholder="nom.prenom" value="${esc(lsGet("sams-remember-id") || "")}"><span class="hint">nom.prenom ou « Nom Prénom »</span></label>
       <label class="f">Mot de passe<input id="lg-pw" name="pw" type="password" autocomplete="current-password" required></label>
+      <label class="check"><input type="checkbox" id="lg-rem" name="remember" ${lsGet("sams-remember-id") || !lsGet("sams-remember-off") ? "checked" : ""}>Se souvenir de moi</label>
       <p class="err" id="lg-err">${esc(T.loginErr || "")}</p>
       <button class="btn">Se connecter</button>
     </form>` : `
@@ -793,10 +817,20 @@ function setupPage(){
 }
 INP.idprev = t => { const p = parseName(t.value); const el = document.getElementById("idprev"); if (el) el.textContent = p ? p.username : "nom.prenom"; };
 FORM.login = async (f, fd) => {
-  const id = norm(fd.get("user")).replace(/\s+/g, "");
-  const a = S.accounts[id];
-  if (!a || a.hash !== await hash(id, fd.get("pw"))) { T.loginErr = "Identifiant ou mot de passe incorrect."; render(true); return; }
-  T.loginErr = ""; session = id; lsSet("sams-session", id);
+  const id = resolveLogin(fd.get("user")), pw = fd.get("pw"), remember = !!fd.get("remember");
+  if (remember) lsDel("sams-remember-off"); else lsSet("sams-remember-off", "1");
+  let a = S.accounts[id];
+  /* Installation neuve : la directrice se connecte une première fois avec le code direction, puis choisit son mot de passe */
+  if (!a && id === DIRECTOR_ID && await hash(id, pw) === DIRECTOR_HASH) {
+    put("accounts", DIRECTOR_ID, {nom: "Gomes", prenom: "Guisepa", role: "direction", poste: "Directrice", specs: [], hash: DIRECTOR_HASH, mustChange: false, med: {}, pay: 0, createdAt: Date.now()});
+    T.loginErr = ""; startSession(id, remember); return go("space");
+  }
+  if (!a && id === DIRECTOR_ID && pw === CODE_DIRECTION) {
+    put("accounts", DIRECTOR_ID, {nom: "Gomes", prenom: "Guisepa", role: "direction", poste: "Directrice", specs: [], hash: "", mustChange: true, med: {}, pay: 0, createdAt: Date.now()});
+    T.loginErr = ""; startSession(id, remember); return go("space");
+  }
+  if (!a || a.hash !== await hash(id, pw)) { T.loginErr = "Identifiant ou mot de passe incorrect."; render(true); return; }
+  T.loginErr = ""; startSession(id, remember);
   go(V.next || "space");
 };
 FORM.register = async (f, fd) => {
@@ -807,7 +841,7 @@ FORM.register = async (f, fd) => {
   if (fd.get("pw").length < 6) return fail("Le mot de passe doit faire au moins 6 caractères.");
   if (fd.get("pw") !== fd.get("pw2")) return fail("Les deux mots de passe ne correspondent pas.");
   put("accounts", p.username, {nom: p.nom, prenom: p.prenom, role: "patient", hash: await hash(p.username, fd.get("pw")), med: {}, createdAt: Date.now()});
-  T.regErr = ""; session = p.username; lsSet("sams-session", session);
+  T.regErr = ""; startSession(p.username, true);
   toast("Compte créé. Votre identifiant : " + p.username);
   go(V.next || "space");
 };
@@ -820,11 +854,11 @@ FORM.setup = async (f, fd) => {
   if (fd.get("pw").length < 6) return fail("Le mot de passe doit faire au moins 6 caractères.");
   if (fd.get("pw") !== fd.get("pw2")) return fail("Les deux mots de passe ne correspondent pas.");
   put("accounts", p.username, {nom: p.nom, prenom: p.prenom, role: "direction", poste: "Directrice", specs: [], hash: await hash(p.username, fd.get("pw")), med: {}, pay: 0, createdAt: Date.now()});
-  session = p.username; lsSet("sams-session", session);
+  startSession(p.username, true);
   toast("Compte de direction créé.");
   go("space");
 };
-ACT.logout = () => { session = null; lsDel("sams-session"); go("home"); };
+ACT.logout = () => { session = null; lsDel("sams-session"); ssDel("sams-session"); go("home"); };
 
 /* ---------- Prise de rendez-vous ---------- */
 function rdvPage(){
