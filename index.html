@@ -641,7 +641,6 @@ function header(){
 }
 function banners(){
   let h = "";
-  if (backend === "local") h += `<div class="banner"><div class="wrap">Mode local : les données sont enregistrées dans ce navigateur uniquement. Pour un site partagé entre joueurs, reliez une base de données (voir les explications fournies avec le site).</div></div>`;
   if (readOnly) h += `<div class="banner"><div class="wrap">Consultation seule : ce lien ne permet pas d'enregistrer. Demandez un accès « Contributeur » à la propriétaire du site.</div></div>`;
   return h;
 }
